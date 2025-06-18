@@ -67,3 +67,66 @@ top_templates["TemplateText"] = top_templates["TemplateID"].map(template_reps)
 # STEP 11: Save or Use Output
 top_templates.to_csv("top_templates_per_project_market.csv", index=False)
 print(top_templates.head())
+
+
+
+
+import pandas as pd
+import numpy as np
+import re
+from sentence_transformers import SentenceTransformer
+import hdbscan
+from sklearn.metrics.pairwise import cosine_distances
+
+# Load your dataset (replace with actual CSV)
+df = pd.read_csv("your_dataset.csv")  # Ensure columns: Description, ProjectName, Market
+
+# Normalize text
+def normalize(text):
+    text = text.lower()
+    text = re.sub(r"[^a-zA-Z0-9\\s]", "", text)
+    return text
+
+df["Normalized"] = df["Description"].apply(normalize)
+
+# Generate sentence embeddings
+model = SentenceTransformer("all-MiniLM-L6-v2")
+embeddings = model.encode(df["Normalized"].tolist(), batch_size=32, show_progress_bar=True)
+
+# Cluster using HDBSCAN
+clusterer = hdbscan.HDBSCAN(min_cluster_size=30, metric='euclidean')
+df["ClusterID"] = clusterer.fit_predict(embeddings)
+
+# Remove noise points (ClusterID = -1)
+df = df[df["ClusterID"] != -1]
+
+# Find representative sentence for each cluster
+template_reps = {}
+for cid in df["ClusterID"].unique():
+    cluster_df = df[df["ClusterID"] == cid]
+    cluster_emb = np.vstack([embeddings[i] for i in cluster_df.index])
+    center = cluster_emb.mean(axis=0, keepdims=True)
+    dists = cosine_distances(cluster_emb, center)
+    best_idx = dists.argmin()
+    rep_sentence = cluster_df.iloc[best_idx]["Description"]
+    template_reps[cid] = rep_sentence
+
+# Group and rank templates per (ProjectName, Market)
+df["TemplateText"] = df["ClusterID"].map(template_reps)
+
+grouped = (
+    df.groupby(["ProjectName", "Market", "TemplateText"])
+    .size()
+    .reset_index(name="Count")
+)
+
+# Rank top 3 templates per (Project, Market)
+grouped["Rank"] = grouped.groupby(["ProjectName", "Market"])["Count"]\
+                         .rank(method="first", ascending=False)
+
+top_templates = grouped[grouped["Rank"] <= 3].copy()
+
+# Save or use the result
+top_templates.to_csv("top_3_templates_per_project_market.csv", index=False)
+print(top_templates.head())
+
