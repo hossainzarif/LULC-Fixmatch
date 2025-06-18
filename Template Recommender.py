@@ -126,6 +126,69 @@ grouped["Rank"] = grouped.groupby(["ProjectName", "Market"])["Count"]\
 
 top_templates = grouped[grouped["Rank"] <= 3].copy()
 
+
+
+
+model = SentenceTransformer("all-MiniLM-L6-v2")
+embeddings = model.encode(df["Normalized"].tolist(), batch_size=32, show_progress_bar=True)
+
+# STEP 6: Tune HDBSCAN Cluster Size
+for min_size in [10, 20, 30, 40, 50, 60]:
+    clusterer = hdbscan.HDBSCAN(min_cluster_size=min_size, min_samples=10, metric='euclidean')
+    labels = clusterer.fit_predict(embeddings)
+    num_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+    noise_ratio = np.sum(labels == -1) / len(labels)
+
+    print(f"\nmin_cluster_size = {min_size}")
+    print(f"→ Number of clusters: {num_clusters}")
+    print(f"→ % of noise points: {noise_ratio:.2%}")
+
+    if num_clusters > 1 and noise_ratio < 0.5:
+        try:
+            sil_score = silhouette_score(embeddings, labels)
+            print(f"→ Silhouette score: {sil_score:.4f}")
+        except:
+            print("→ Silhouette score: Not computable (e.g., 1 cluster)")
+
+# STEP 7: Choose Best Cluster Size (manual selection based on results above)
+clusterer = hdbscan.HDBSCAN(min_cluster_size=30, min_samples=10, metric='euclidean')
+cluster_labels = clusterer.fit_predict(embeddings)
+df["ClusterID"] = cluster_labels
+
+# Remove noise points (ClusterID == -1)
+df = df[df["ClusterID"] != -1]
+
+# STEP 8: Extract Representative Sentence for Each Cluster
+template_reps = {}
+for cid in df["ClusterID"].unique():
+    cluster_df = df[df["ClusterID"] == cid]
+    cluster_emb = np.vstack([embeddings[i] for i in cluster_df.index])
+    center = cluster_emb.mean(axis=0, keepdims=True)
+    dists = cosine_distances(cluster_emb, center)
+    best_idx = dists.argmin()
+    rep_sentence = cluster_df.iloc[best_idx]["Description"]
+    template_reps[cid] = rep_sentence
+
+df["TemplateText"] = df["ClusterID"].map(template_reps)
+
+# STEP 9: Group and Rank Templates per (ProjectName, Market)
+grouped = (
+    df.groupby(["ProjectName", "Market", "TemplateText"])
+    .size()
+    .reset_index(name="Count")
+)
+
+grouped["Rank"] = grouped.groupby(["ProjectName", "Market"])["Count"]\
+                         .rank(method="first", ascending=False)
+
+# STEP 10: Get Top 3 Templates per (Project, Market)
+top_templates = grouped[grouped["Rank"] <= 3].copy()
+
+# STEP 11: Save or Use Output
+top_templates.to_csv("top_3_templates_per_project_market.csv", index=False)
+print(top_templates.head())
+
+
 # Save or use the result
 top_templates.to_csv("top_3_templates_per_project_market.csv", index=False)
 print(top_templates.head())
