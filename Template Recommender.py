@@ -1,0 +1,69 @@
+# STEP-BY-STEP: Template Recommendation System
+
+# STEP 0: Install Required Packages
+# pip install pandas numpy nltk sentence-transformers bertopic scikit-learn
+
+# STEP 1: Import Libraries
+import pandas as pd
+import numpy as np
+import re
+import nltk
+from sklearn.feature_extraction.text import CountVectorizer
+from nltk import pos_tag, word_tokenize
+from sentence_transformers import SentenceTransformer
+from bertopic import BERTopic
+from sklearn.metrics.pairwise import cosine_distances
+
+# STEP 2: Download NLTK Resources (only once)
+nltk.download("punkt")
+nltk.download("averaged_perceptron_tagger")
+
+# STEP 3: Load Your Dataset (Replace with your actual CSV)
+df = pd.read_csv("your_dataset.csv")  # Columns: USID, ProjectName, Market, Description
+
+# STEP 4: Normalize the Descriptions
+def normalize(text):
+    text = text.lower()
+    text = re.sub(r"[^a-zA-Z0-9\s]", "", text)
+    return text
+
+df["Normalized"] = df["Description"].apply(normalize)
+
+# STEP 5: Generate Sentence Embeddings
+model = SentenceTransformer("all-MiniLM-L6-v2")
+df["Embedding"] = list(model.encode(df["Normalized"].tolist(), batch_size=16, show_progress_bar=True))
+
+# STEP 6: Cluster Sentences using BERTopic
+topic_model = BERTopic(embedding_model=model, nr_topics="auto")
+topics, _ = topic_model.fit_transform(df["Normalized"].tolist(), embeddings=df["Embedding"].tolist())
+df["TemplateID"] = topics
+
+# STEP 7: Extract Representative Template from Each Cluster
+template_reps = {}
+for tid in df["TemplateID"].unique():
+    cluster_df = df[df["TemplateID"] == tid]
+    cluster_embeddings = np.vstack(cluster_df["Embedding"])
+    center = cluster_embeddings.mean(axis=0, keepdims=True)
+    dists = cosine_distances(cluster_embeddings, center)
+    best_idx = dists.argmin()
+    representative = cluster_df.iloc[best_idx]["Description"]
+    template_reps[tid] = representative
+
+# STEP 8: Count Frequency of Each Template in Context
+grouped = (
+    df.groupby(["ProjectName", "Market", "TemplateID"])
+    .size()
+    .reset_index(name="Count")
+)
+
+# STEP 9: Rank Templates by Frequency per (Project, Market)
+grouped["Rank"] = grouped.groupby(["ProjectName", "Market"])["Count"]\
+                         .rank(method="first", ascending=False)
+
+# STEP 10: Get Top 3 Templates per Context
+top_templates = grouped[grouped["Rank"] <= 3].copy()
+top_templates["TemplateText"] = top_templates["TemplateID"].map(template_reps)
+
+# STEP 11: Save or Use Output
+top_templates.to_csv("top_templates_per_project_market.csv", index=False)
+print(top_templates.head())
