@@ -272,6 +272,14 @@ df["StructuredInput"] = df.apply(
 )
 
 
+def structured_sentence(row):
+    return (
+        f"In project {row['ProjectName']} for market {row['Market']}, "
+        f"the project details are: {row['Normalized']}."
+    )
+
+df["PromptInput"] = df.apply(structured_sentence, axis=1)
+embeddings = model.encode(df["PromptInput"].tolist(), batch_size=32, show_progress_bar=True)
 
 
 
